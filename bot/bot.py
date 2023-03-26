@@ -15,7 +15,8 @@ from telegram import (
     User, 
     InlineKeyboardButton, 
     InlineKeyboardMarkup, 
-    BotCommand
+    BotCommand,
+    InputFile
 )
 from telegram.ext import (
     Application,
@@ -32,6 +33,7 @@ from telegram.constants import ParseMode, ChatAction
 import config
 import database
 import openai_utils
+import tts_utils
 
 
 # setup
@@ -73,6 +75,9 @@ async def register_user_if_not_exists(update: Update, context: CallbackContext, 
 
     if db.get_user_attribute(user.id, "current_model") is None:
         db.set_user_attribute(user.id, "current_model", config.models["available_text_models"][0])
+
+    if db.get_user_attribute(user.id, "need_voice_response") is None:
+        db.set_user_attribute(user.id, "need_voice_response", "Yes")
 
     # back compatibility for n_used_tokens field
     n_used_tokens = db.get_user_attribute(user.id, "n_used_tokens")
@@ -179,6 +184,7 @@ async def message_handle(update: Update, context: CallbackContext, message=None,
                 gen = fake_gen()
 
             # send message to user
+            total_answer = ""
             prev_answer = ""
             i = -1
             async for gen_item in gen:
@@ -193,6 +199,7 @@ async def message_handle(update: Update, context: CallbackContext, message=None,
                     raise ValueError(f"Streaming status {status} is unknown")
 
                 answer = answer[:4096]  # telegram message limit
+                total_answer += answer
                 if i == 0:  # send first message (then it'll be edited if message streaming is enabled)
                     try:                    
                         sent_message = await update.message.reply_text(answer, parse_mode=parse_mode)
@@ -218,7 +225,15 @@ async def message_handle(update: Update, context: CallbackContext, message=None,
                     await asyncio.sleep(0.01)  # wait a bit to avoid flooding
                     
                 prev_answer = answer
-
+            # send voice msg
+            if db.get_user_attribute(user_id, "need_voice_response") == "Yes":
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    tmp_dir = Path(tmp_dir)
+                    voice_ogg_path = tmp_dir / "voice.ogg"
+                    tts_utils.text_to_speech(answer, voice_ogg_path)
+                    with open(voice_ogg_path, "rb") as f:
+                        voice_message = InputFile(f, filename='voice.ogg')
+                        await update.message.reply_voice(voice=voice_message)
             # update user data
             new_dialog_message = {"user": message, "bot": answer, "date": datetime.now()}
             db.set_dialog_messages(
@@ -333,29 +348,46 @@ async def set_chat_mode_handle(update: Update, context: CallbackContext):
 
 
 def get_settings_menu(user_id: int):
-    current_model = db.get_user_attribute(user_id, "current_model")
-    text = config.models["info"][current_model]["description"]
+    text = "Do you need <b>voice response</b> along with text response every time you send a message?"
 
-    text += "\n\n"
-    score_dict = config.models["info"][current_model]["scores"]
-    for score_key, score_value in score_dict.items():
-        text += "🟢" * score_value + "⚪️" * (5 - score_value) + f" – {score_key}\n\n"
-
-    text += "\nSelect <b>model</b>:"
-
+    current_selection = db.get_user_attribute(user_id, "need_voice_response")
     # buttons to choose models
+    valid_selections = ["Yes", "No"]
     buttons = []
-    for model_key in config.models["available_text_models"]:
-        title = config.models["info"][model_key]["name"]
-        if model_key == current_model:
-            title = "✅ " + title
-
+    for selection in valid_selections:
+        title = "✅ " if current_selection == selection else "" + selection
         buttons.append(
-            InlineKeyboardButton(title, callback_data=f"set_settings|{model_key}")
+            InlineKeyboardButton(title, callback_data=f"set_settings|{selection}")
         )
     reply_markup = InlineKeyboardMarkup([buttons])
 
     return text, reply_markup
+
+
+# def get_settings_menu(user_id: int):
+#     current_model = db.get_user_attribute(user_id, "current_model")
+#     text = config.models["info"][current_model]["description"]
+
+#     text += "\n\n"
+#     score_dict = config.models["info"][current_model]["scores"]
+#     for score_key, score_value in score_dict.items():
+#         text += "🟢" * score_value + "⚪️" * (5 - score_value) + f" – {score_key}\n\n"
+
+#     text += "\nSelect <b>model</b>:"
+
+#     # buttons to choose models
+#     buttons = []
+#     for model_key in config.models["available_text_models"]:
+#         title = config.models["info"][model_key]["name"]
+#         if model_key == current_model:
+#             title = "✅ " + title
+
+#         buttons.append(
+#             InlineKeyboardButton(title, callback_data=f"set_settings|{model_key}")
+#         )
+#     reply_markup = InlineKeyboardMarkup([buttons])
+
+#     return text, reply_markup
 
 
 async def settings_handle(update: Update, context: CallbackContext):
@@ -376,8 +408,8 @@ async def set_settings_handle(update: Update, context: CallbackContext):
     query = update.callback_query
     await query.answer()
 
-    _, model_key = query.data.split("|")
-    db.set_user_attribute(user_id, "current_model", model_key)
+    _, selection = query.data.split("|")
+    db.set_user_attribute(user_id, "need_voice_response", selection)
     db.start_new_dialog(user_id)
 
     text, reply_markup = get_settings_menu(user_id)
