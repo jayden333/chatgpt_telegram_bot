@@ -102,10 +102,10 @@ async def start_handle(update: Update, context: CallbackContext):
     db.set_user_attribute(user_id, "last_interaction", datetime.now())
     db.start_new_dialog(user_id)
     
-    reply_text = "Hi! I'm <b>ChatGPT</b> bot implemented with GPT-3.5 OpenAI API 🤖\n\n"
+    reply_text = "Hi! I'm <b>English Tutor</b> bot based on chatgpt API, you can use text or voice to take a conversion with me 🤖\n\n"
     reply_text += HELP_MESSAGE
 
-    reply_text += "\nAnd now... ask me anything!"
+    reply_text += "\nAnd now... select a chat /mode and start!"
     
     await update.message.reply_text(reply_text, parse_mode=ParseMode.HTML)
 
@@ -146,6 +146,12 @@ async def message_handle(update: Update, context: CallbackContext, message=None,
 
     user_id = update.message.from_user.id
     chat_mode = db.get_user_attribute(user_id, "current_chat_mode")
+    current_model = db.get_user_attribute(user_id, "current_model")
+
+    # check valid tokens
+    if not has_enough_tokens(user_id, current_model):
+        await runout_of_tokens_handle(update, context)
+        return
     
     async with user_semaphores[user_id]:
         # new dialog timeout
@@ -161,7 +167,6 @@ async def message_handle(update: Update, context: CallbackContext, message=None,
         try:
             message = message or update.message.text
 
-            current_model = db.get_user_attribute(user_id, "current_model")
             dialog_messages = db.get_dialog_messages(user_id, dialog_id=None)
             parse_mode = {
                 "html": ParseMode.HTML,
@@ -276,6 +281,12 @@ async def voice_message_handle(update: Update, context: CallbackContext):
 
     user_id = update.message.from_user.id
     db.set_user_attribute(user_id, "last_interaction", datetime.now())
+    current_model = db.get_user_attribute(user_id, "current_model")
+
+    # check valid tokens
+    if not has_enough_tokens(user_id, current_model):
+        await runout_of_tokens_handle(update, context)
+        return
 
     voice = update.message.voice
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -442,18 +453,26 @@ async def show_balance_handle(update: Update, context: CallbackContext):
         n_output_spent_dollars = config.models["info"][model_key]["price_per_1000_output_tokens"] * (n_output_tokens / 1000)
         total_n_spent_dollars += n_input_spent_dollars + n_output_spent_dollars
 
-        details_text += f"- {model_key}: <b>{n_input_spent_dollars + n_output_spent_dollars:.03f}$</b> / <b>{n_input_tokens + n_output_tokens} tokens</b>\n"
+        # details_text += f"- {model_key}: <b>{n_input_spent_dollars + n_output_spent_dollars:.03f}$</b> / <b>{n_input_tokens + n_output_tokens} tokens</b>\n"
+        details_text += f"- {model_key}: <b>{n_input_tokens + n_output_tokens} tokens</b>\n"
 
     voice_recognition_n_spent_dollars = config.models["info"]["whisper"]["price_per_1_min"] * (n_transcribed_seconds / 60)
     if n_transcribed_seconds != 0:
-        details_text += f"- Whisper (voice recognition): <b>{voice_recognition_n_spent_dollars:.03f}$</b> / <b>{n_transcribed_seconds:.01f} seconds</b>\n"
+        # details_text += f"- Whisper (voice recognition): <b>{voice_recognition_n_spent_dollars:.03f}$</b> / <b>{n_transcribed_seconds:.01f} seconds</b>\n"
+        details_text += f"- Whisper (voice recognition): <b>{n_transcribed_seconds:.01f} seconds</b>\n"
     
     total_n_spent_dollars += voice_recognition_n_spent_dollars    
 
-    text = f"You spent <b>{total_n_spent_dollars:.03f}$</b>\n"
+    # text = f"You spent <b>{total_n_spent_dollars:.03f}$</b>\n"
+    text = ""
     text += f"You used <b>{total_n_used_tokens}</b> tokens\n\n"
     text += details_text
 
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+async def runout_of_tokens_handle(update: Update, context: CallbackContext):
+    text = "🥲 Sorry, you have run out of tokens. Please contact admin @bigbang951 to upgrade the plan"
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
@@ -496,6 +515,15 @@ async def post_init(application: Application):
         BotCommand("/settings", "Show settings"),
         BotCommand("/help", "Show help message"),
     ])
+
+
+def has_enough_tokens(user_id: int, model_key: str) -> bool:
+    if user_id in config.models["info"][model_key]["free_users"]:
+        return True
+    n_used_tokens = db.get_n_used_tokens(user_id, model_key)
+    print("user_id", user_id, "model_key", model_key, "n_used_tokens", n_used_tokens)
+    return n_used_tokens < config.models["info"][model_key]["free_tokens_per_user"]
+
 
 def run_bot() -> None:
     application = (

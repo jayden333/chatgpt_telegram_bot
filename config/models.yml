@@ -9,6 +9,9 @@ info:
     price_per_1000_input_tokens: 0.002
     price_per_1000_output_tokens: 0.002
 
+    free_tokens_per_user: 8000
+    free_users: [5295942596]
+
     scores:
       Smart: 3
       Fast: 5

@@ -106,6 +106,15 @@ class Database:
 
         self.set_user_attribute(user_id, "n_used_tokens", n_used_tokens_dict)
 
+    def get_n_used_tokens(self, user_id: int, model: str) -> int:
+        n_used_tokens_dict = self.get_user_attribute(user_id, "n_used_tokens")
+
+        if model not in n_used_tokens_dict:
+            return 0
+        n_input_tokens = n_used_tokens_dict[model]["n_input_tokens"]
+        n_output_tokens = n_used_tokens_dict[model]["n_output_tokens"]
+        return n_input_tokens + n_output_tokens
+
     def get_dialog_messages(self, user_id: int, dialog_id: Optional[str] = None):
         self.check_if_user_exists(user_id, raise_exception=True)
 
